@@ -31,16 +31,18 @@ internal static class SogouPanelTracker
         return status ?? candidate;
     }
 
-    internal static void Place(nint hwnd, Bounds anchor)
+    internal static void Place(nint hwnd, Bounds anchor, bool bringToFront)
     {
         var screen = System.Windows.Forms.Screen.FromRectangle(new System.Drawing.Rectangle(anchor.Left, anchor.Top, Math.Max(1, anchor.Right - anchor.Left), Math.Max(1, anchor.Bottom - anchor.Top)));
         var work = screen.WorkingArea;
         var x = Math.Clamp(anchor.Left, work.Left, Math.Max(work.Left, work.Right - 261));
         // 搜狗状态皮肤的窗口顶部带透明留白，向下补偿后贴近可见皮肤。
-        var y = anchor.Top - 191 + 27;
+        var y = anchor.Top - 191 + 32;
         if (y < work.Top) y = anchor.Bottom + 4;
         y = Math.Clamp(y, work.Top, Math.Max(work.Top, work.Bottom - 191));
-        SetWindowPos(hwnd, 0, x, y, 0, 0, 0x0001 | 0x0004 | 0x0010);
+        // 仅在浮窗重新显示时放到普通窗口层前方；跟随移动时不改变层级。
+        var flags = 0x0001u | 0x0010u | (bringToFront ? 0u : 0x0004u);
+        SetWindowPos(hwnd, 0, x, y, 0, 0, flags);
     }
 
     [StructLayout(LayoutKind.Sequential)] private struct Rect { public int Left, Top, Right, Bottom; }

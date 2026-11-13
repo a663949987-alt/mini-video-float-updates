@@ -564,9 +564,10 @@ public partial class MainWindow : Window
     {
         var anchor = SogouPanelTracker.Find();
         var shouldShow = !_manuallyHidden && anchor is not null;
-        if (shouldShow && anchor is { } location)
-            SogouPanelTracker.Place(new WindowInteropHelper(this).Handle, location);
+        var wasVisible = IsVisible;
         SetPlayerVisibility(shouldShow);
+        if (shouldShow && anchor is { } location)
+            SogouPanelTracker.Place(new WindowInteropHelper(this).Handle, location, !wasVisible);
     }
 
     private void SetPlayerVisibility(bool show)

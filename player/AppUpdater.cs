@@ -9,7 +9,7 @@ namespace MiniVideoFloat;
 
 internal static class AppUpdater
 {
-    private const string CurrentVersion = "1.0.1";
+    private const string CurrentVersion = "1.0.2";
     private const string ApiUrl = "https://api.github.com/repos/a663949987-alt/mini-video-float-updates/releases/latest";
     private static readonly HttpClient Client = CreateClient();
     private static DispatcherTimer? _timer;
