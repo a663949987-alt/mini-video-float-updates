@@ -432,7 +432,11 @@ public partial class MainWindow : Window
         var (width, height) = WindowRelay.GetSourceSize(_relayThumbnail);
         if (width <= 0 || height <= 0) return;
         var source = _relayCrop ?? new WindowRelay.CropRect(0, 0, width, height);
-        var band = WindowRelay.SubtitleBand(source, 155, 22, _subtitleZoomLevel == 1 ? 1.25 : 1.5);
+        var visible = WindowRelay.FitCrop(source, 155, 98);
+        // Use the displayed width for the requested zoom; use the original
+        // bottom so subtitles remain available even in a cropped portrait video.
+        var captionSource = new WindowRelay.CropRect(visible.Left, source.Top, visible.Right, source.Bottom);
+        var band = WindowRelay.SubtitleBand(captionSource, 155, 22, _subtitleZoomLevel == 1 ? 1.25 : 1.5);
         var update = WindowRelay.Update(_subtitleThumbnail, 10, 87, 155, 22, _relayVisible, band, opacity);
         if (update < 0 && !_subtitleZoomUnavailable)
         {
