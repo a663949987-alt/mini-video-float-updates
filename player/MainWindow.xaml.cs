@@ -19,8 +19,12 @@ public partial class MainWindow : Window
     private const uint ModAlt = 0x0001, ModControl = 0x0002, ModNoRepeat = 0x4000;
     private readonly DispatcherTimer _timer = new() { Interval = TimeSpan.FromMilliseconds(250) };
     private readonly DispatcherTimer _imeTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
+    private readonly DispatcherTimer _pixelTimer = new() { Interval = TimeSpan.FromMilliseconds(200) };
     private bool _manuallyHidden;
     private bool _initialized;
+    private bool _pixelCaptureBusy, _pixelActive, _pixelCaptureUnavailable;
+    private int _pixelSize, _pixelFailures, _pixelGeneration;
+    private double _brightness = .85;
     private readonly string _settingsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MiniVideoFloat", "settings.json");
     private HwndSource? _source;
     private IntPtr _relayWindow, _relayThumbnail;
@@ -45,6 +49,7 @@ public partial class MainWindow : Window
         InitializeComponent();
         _timer.Tick += (_, _) => UpdateProgress();
         _imeTimer.Tick += (_, _) => RefreshImePanel();
+        _pixelTimer.Tick += PixelTimer_Tick;
         Loaded += (_, _) => BuildContextMenu();
     }
 
@@ -67,6 +72,7 @@ public partial class MainWindow : Window
         _mouseHookProc = MouseHookCallback;
         _mouseHook = SetWindowsHookEx(14, _mouseHookProc, GetModuleHandle(null), 0);
         _imeTimer.Start();
+        _pixelTimer.Start();
         RefreshImePanel();
         Dispatcher.BeginInvoke(new Action(ConnectRedFruit));
         AppUpdater.Start();
@@ -121,6 +127,22 @@ public partial class MainWindow : Window
         menu.Items.Add(Menu("打开 / 连接红果", (_, _) => ConnectRedFruit()));
         menu.Items.Add(Menu("隐藏 / 显示红果画面", (_, _) => TogglePlayback()));
         menu.Items.Add(Menu("红果静音 / 取消静音", (_, _) => Mute_Click(this, new RoutedEventArgs())));
+        var brightnessMenu = new System.Windows.Controls.MenuItem { Header = "画面亮度" };
+        foreach (var level in new[] { 100, 85, 70, 55 })
+        {
+            var item = Menu($"{level}%", (_, _) => SetBrightness(level / 100d));
+            item.IsCheckable = true; item.IsChecked = Math.Abs(_brightness - level / 100d) < .001;
+            brightnessMenu.Items.Add(item);
+        }
+        menu.Items.Add(brightnessMenu);
+        var pixelMenu = new System.Windows.Controls.MenuItem { Header = _pixelCaptureUnavailable ? "像素化（画面暂无法捕获）" : "画面像素化（约 5 帧/秒）" };
+        foreach (var option in new[] { ("关闭", 0), ("轻微", 2), ("中等", 4), ("明显", 8) })
+        {
+            var item = Menu(option.Item1, (_, _) => SetPixelSize(option.Item2));
+            item.IsCheckable = true; item.IsChecked = _pixelSize == option.Item2;
+            pixelMenu.Items.Add(item);
+        }
+        menu.Items.Add(pixelMenu);
         menu.Items.Add(Menu("隐藏播放器", (_, _) => HidePlayerWindow()));
         menu.Items.Add(new System.Windows.Controls.Separator());
         menu.Items.Add(Menu("隐藏转播源窗口（Alt+Tab）", (_, _) => HideRelaySourceFromAltTab()));
@@ -149,6 +171,72 @@ public partial class MainWindow : Window
         var item = new System.Windows.Controls.MenuItem { Header = text };
         item.Click += action;
         return item;
+    }
+
+    private void SetBrightness(double value)
+    {
+        _brightness = Math.Clamp(value, .2, 1);
+        PixelVideo.Opacity = _brightness;
+        UpdateRelayThumbnail();
+        SaveSettings(); BuildContextMenu();
+    }
+
+    private void SetPixelSize(int value)
+    {
+        _pixelSize = value is 2 or 4 or 8 ? value : 0;
+        _pixelGeneration++;
+        _pixelActive = false; _pixelFailures = 0; _pixelCaptureUnavailable = false;
+        PixelVideo.Source = null;
+        UpdateRelayThumbnail();
+        SaveSettings(); BuildContextMenu();
+    }
+
+    private async void PixelTimer_Tick(object? sender, EventArgs e)
+    {
+        if (_pixelSize == 0 || _pixelCaptureBusy || !IsVisible || !_relayVisible || _relayThumbnail == IntPtr.Zero || _relayWindow == IntPtr.Zero) return;
+        var (width, height) = WindowRelay.GetSourceSize(_relayThumbnail);
+        if (width <= 0 || height <= 0 || WindowRelay.IsMinimized(_relayWindow)) return;
+        var source = _relayWindow; var crop = _relayCrop; var size = _pixelSize; var generation = _pixelGeneration;
+        _pixelCaptureBusy = true;
+        Task<System.Windows.Media.Imaging.BitmapSource?>? capture = null;
+        try
+        {
+            capture = Task.Run(() => PixelFrameRenderer.Capture(source, width, height, crop, size));
+            var image = await capture.WaitAsync(TimeSpan.FromSeconds(2));
+            if (generation != _pixelGeneration || source != _relayWindow || size != _pixelSize || !IsVisible || !_relayVisible) return;
+            if (image is null)
+            {
+                if (++_pixelFailures >= 3)
+                {
+                    _pixelActive = false; PixelVideo.Source = null;
+                    if (!_pixelCaptureUnavailable) { _pixelCaptureUnavailable = true; BuildContextMenu(); }
+                    UpdateRelayThumbnail();
+                }
+                return;
+            }
+            _pixelFailures = 0;
+            if (_pixelCaptureUnavailable) { _pixelCaptureUnavailable = false; BuildContextMenu(); }
+            PixelVideo.Source = image;
+            PixelVideo.Opacity = _brightness;
+            if (!_pixelActive) { _pixelActive = true; UpdateRelayThumbnail(); }
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"像素化画面捕获失败: {ex.Message}");
+            if (generation == _pixelGeneration && (ex is TimeoutException || ++_pixelFailures >= 3))
+            {
+                _pixelActive = false; PixelVideo.Source = null; _pixelCaptureUnavailable = true;
+                UpdateRelayThumbnail(); BuildContextMenu();
+            }
+        }
+        finally
+        {
+            if (capture is null || capture.IsCompleted) _pixelCaptureBusy = false;
+            else _ = capture.ContinueWith(_ =>
+            {
+                if (!Dispatcher.HasShutdownStarted) Dispatcher.BeginInvoke(() => _pixelCaptureBusy = false);
+            }, TaskScheduler.Default);
+        }
     }
 
     private void ShowVideoSizeDialog()
@@ -358,8 +446,9 @@ public partial class MainWindow : Window
     private void UpdateRelayThumbnail()
     {
         if (_relayThumbnail != IntPtr.Zero)
-            WindowRelay.Update(_relayThumbnail, 10, 11, 155, 98, _relayVisible,
-                _relayCrop is { } crop ? WindowRelay.FitCrop(crop, 155, 98) : null);
+            WindowRelay.Update(_relayThumbnail, 10, 11, 155, 98, _relayVisible && !_pixelActive,
+                _relayCrop is { } crop ? WindowRelay.FitCrop(crop, 155, 98) : null,
+                (byte)Math.Round(_brightness * 255));
     }
 
     private void ShowRelayCropDialog()
@@ -382,6 +471,7 @@ public partial class MainWindow : Window
 
     private void StopWindowRelay()
     {
+        _pixelGeneration++; _pixelActive = false; _pixelFailures = 0; PixelVideo.Source = null;
         RestoreRelayAfterPlayerHidden();
         if (_relayOriginalExtendedStyle is { } originalStyle)
         {
@@ -510,7 +600,8 @@ public partial class MainWindow : Window
     private void ApplyTheme()
     {
         Shell.Background = Brush("#FFFFFF");
-        VideoFrame.Background = Brush("#222536");
+        VideoFrame.Background = Brush("#000000");
+        PixelVideo.Opacity = _brightness;
     }
     private static SolidColorBrush Brush(string color) => new((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(color)!);
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -530,6 +621,8 @@ public partial class MainWindow : Window
             if (!File.Exists(_settingsPath)) return;
             var s = JsonSerializer.Deserialize<Settings>(File.ReadAllText(_settingsPath));
             _savedLeft = s?.Left; _savedTop = s?.Top; _dark = s?.Dark ?? false;
+            _brightness = s?.Brightness is > 0 ? Math.Clamp(s.Brightness, .2, 1) : .85;
+            _pixelSize = s?.PixelSize is 2 or 4 or 8 ? s.PixelSize : 0;
             _videoWidth = s?.VideoWidth ?? 62; _videoHeight = s?.VideoHeight ?? 42;
             var gcd = GreatestCommonDivisor((int)_videoWidth, (int)_videoHeight);
             _aspectWidth = s?.AspectWidth > 0 ? s.AspectWidth : (int)_videoWidth / gcd;
@@ -605,9 +698,9 @@ public partial class MainWindow : Window
     private delegate IntPtr LowLevelMouseProc(int code, IntPtr message, IntPtr data);
     private void SaveSettings()
     {
-        try { Directory.CreateDirectory(Path.GetDirectoryName(_settingsPath)!); File.WriteAllText(_settingsPath, JsonSerializer.Serialize(new Settings(Left, Top, _dark, _videoWidth, _videoHeight, _aspectWidth, _aspectHeight))); } catch { }
+        try { Directory.CreateDirectory(Path.GetDirectoryName(_settingsPath)!); File.WriteAllText(_settingsPath, JsonSerializer.Serialize(new Settings(Left, Top, _dark, _videoWidth, _videoHeight, _aspectWidth, _aspectHeight, _brightness, _pixelSize))); } catch { }
     }
-    private sealed record Settings(double Left, double Top, bool Dark, double VideoWidth = 62, double VideoHeight = 42, int AspectWidth = 31, int AspectHeight = 21);
+    private sealed record Settings(double Left, double Top, bool Dark, double VideoWidth = 62, double VideoHeight = 42, int AspectWidth = 31, int AspectHeight = 21, double Brightness = .85, int PixelSize = 0);
     private sealed class NativeWindowOwner(IntPtr handle) : Forms.IWin32Window { public IntPtr Handle { get; } = handle; }
 
     [DllImport("user32.dll", SetLastError = true)] private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint modifiers, uint vk);

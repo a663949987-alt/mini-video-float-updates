@@ -8,7 +8,9 @@
     <Border x:Name="Shell" CornerRadius="8" Background="White" ClipToBounds="True" PreviewMouseLeftButtonDown="Shell_PreviewMouseLeftButtonDown">
         <Viewbox Stretch="Fill">
             <Grid Width="261" Height="191">
-                <Border x:Name="VideoFrame" Background="#222536" Width="155" Height="98" Margin="10,11,0,0" HorizontalAlignment="Left" VerticalAlignment="Top"/>
+                <Border x:Name="VideoFrame" Background="Black" Width="155" Height="98" Margin="10,11,0,0" HorizontalAlignment="Left" VerticalAlignment="Top" ClipToBounds="True">
+                    <Image x:Name="PixelVideo" Stretch="Fill" RenderOptions.BitmapScalingMode="NearestNeighbor" IsHitTestVisible="False"/>
+                </Border>
                 <StackPanel Margin="176,17,8,0" VerticalAlignment="Top">
                     <TextBlock Text="◒ 搜狗输入法" FontSize="8" FontWeight="Bold" Foreground="#252525"/>
                     <TextBlock Text="打字跟随" FontSize="15" FontWeight="ExtraBold" Foreground="#161616" Margin="0,3,0,0"/>

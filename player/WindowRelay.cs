@@ -93,7 +93,7 @@ internal static class WindowRelay
         return GetWindowLongPtr(hwnd, -20).ToInt64() == style;
     }
 
-    internal static void Update(IntPtr thumbnail, int left, int top, int width, int height, bool visible, CropRect? sourceCrop = null)
+    internal static void Update(IntPtr thumbnail, int left, int top, int width, int height, bool visible, CropRect? sourceCrop = null, byte opacity = 255)
     {
         if (thumbnail == IntPtr.Zero) return;
         var properties = new ThumbnailProperties
@@ -101,7 +101,7 @@ internal static class WindowRelay
             Flags = 0x01 | 0x04 | 0x08 | 0x10 | (sourceCrop.HasValue ? 0x02u : 0u),
             Destination = new Rect { Left = left, Top = top, Right = left + width, Bottom = top + height },
             Source = sourceCrop is { } crop ? new Rect { Left = crop.Left, Top = crop.Top, Right = crop.Right, Bottom = crop.Bottom } : default,
-            Opacity = 255,
+            Opacity = opacity,
             Visible = visible,
             SourceClientAreaOnly = true
         };
