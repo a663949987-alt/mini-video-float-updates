@@ -8,6 +8,13 @@ internal static class WindowRelay
 {
     private const long WsExToolWindow = 0x00000080, WsExAppWindow = 0x00040000;
     internal readonly record struct CropRect(int Left, int Top, int Right, int Bottom);
+    internal static (CropRect Top, CropRect BottomLeft) SplitForBadge(CropRect crop, int destinationHeight)
+    {
+        if (destinationHeight <= 14 || crop.Right - crop.Left < 2 || crop.Bottom - crop.Top < 2) throw new ArgumentException("Video area too small");
+        var y = Math.Clamp(crop.Top + (int)Math.Round((crop.Bottom - crop.Top) * (destinationHeight - 14d) / destinationHeight), crop.Top + 1, crop.Bottom - 1);
+        var x = Math.Clamp(crop.Left + (int)Math.Round((crop.Right - crop.Left) * 130d / 155d), crop.Left + 1, crop.Right - 1);
+        return (new CropRect(crop.Left, crop.Top, crop.Right, y), new CropRect(crop.Left, y, x, crop.Bottom));
+    }
     internal readonly record struct WindowRect(int Left, int Top, int Width, int Height);
     internal sealed record WindowInfo(IntPtr Handle, int ProcessId, string Title, string ProcessName)
     {

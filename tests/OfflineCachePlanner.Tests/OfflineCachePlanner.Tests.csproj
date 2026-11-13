@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../player/OfflineCachePlanner.cs" Link="OfflineCachePlanner.cs" />
+    <Compile Include="../../player/RedFruitProgressReader.cs" Link="RedFruitProgressReader.cs" />
+    <Compile Include="../../player/WheelGesture.cs" Link="WheelGesture.cs" />
+  </ItemGroup>
+</Project>

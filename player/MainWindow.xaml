@@ -9,6 +9,9 @@
         <Viewbox Stretch="Fill">
             <Grid Width="261" Height="191">
                 <Border x:Name="VideoFrame" Background="Black" Width="155" Height="98" Margin="10,11,0,0" HorizontalAlignment="Left" VerticalAlignment="Top" ClipToBounds="True"/>
+                <Image x:Name="LoopImage" Width="155" Height="98" Margin="10,11,0,0" HorizontalAlignment="Left" VerticalAlignment="Top" Stretch="Fill" Visibility="Collapsed" IsHitTestVisible="False"/>
+                <Border x:Name="LoopBorder" Width="155" Height="98" Margin="10,11,0,0" HorizontalAlignment="Left" VerticalAlignment="Top" BorderBrush="#E8AA65" BorderThickness="1" Visibility="Collapsed" IsHitTestVisible="False"/>
+                <Border Width="25" Height="14" Margin="140,95,0,0" HorizontalAlignment="Left" VerticalAlignment="Top" Background="#DD202020" CornerRadius="2" IsHitTestVisible="False"><TextBlock Text="广告" FontSize="9" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
                 <StackPanel Margin="176,17,8,0" VerticalAlignment="Top">
                     <TextBlock Text="◒ 搜狗输入法" FontSize="8" FontWeight="Bold" Foreground="#252525"/>
                     <TextBlock Text="打字跟随" FontSize="15" FontWeight="ExtraBold" Foreground="#161616" Margin="0,3,0,0"/>
@@ -45,6 +48,9 @@
                 </Button>
                 <Button Width="49" Height="65" Margin="205,119,0,0" HorizontalAlignment="Left" VerticalAlignment="Top" Click="OpenSkin_Click" Focusable="False">
                     <Button.Template><ControlTemplate TargetType="Button"><Border Background="Transparent"/></ControlTemplate></Button.Template>
+                </Button>
+                <Button Width="18" Height="18" Margin="0,3,4,0" HorizontalAlignment="Right" VerticalAlignment="Top" Click="DismissAd_Click" Focusable="False" ToolTip="关闭">
+                    <Button.Template><ControlTemplate TargetType="Button"><Border Background="Transparent"><TextBlock Text="×" FontSize="15" Foreground="#909090" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border></ControlTemplate></Button.Template>
                 </Button>
             </Grid>
         </Viewbox>

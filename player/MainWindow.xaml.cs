@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using Forms = System.Windows.Forms;
 
@@ -19,6 +20,20 @@ public partial class MainWindow : Window
     private const uint ModAlt = 0x0001, ModControl = 0x0002, ModNoRepeat = 0x4000;
     private readonly DispatcherTimer _timer = new() { Interval = TimeSpan.FromMilliseconds(250) };
     private readonly DispatcherTimer _imeTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
+    private readonly DispatcherTimer _cacheTimer = new() { Interval = TimeSpan.FromSeconds(30) };
+    private readonly DispatcherTimer _frameTimer = new() { Interval = TimeSpan.FromMilliseconds(67) };
+    private readonly DispatcherTimer _fadeTimer = new() { Interval = TimeSpan.FromMilliseconds(16) };
+    private readonly WheelGesture _wheelGesture = new();
+    private readonly RecentVideoFrames _recentFrames = new();
+    private readonly Stopwatch _loopClock = new();
+    private RecentVideoFrames.Frame[] _loopFrames = [];
+    private bool _capturingFrame, _loopActive;
+    private bool _desiredVisible = true;
+    private double _captureAverageMs;
+    private bool _cacheChecking;
+    private string? _cacheCheckedVideoId;
+    private DateTime _lastCacheSuccessUtc;
+    private DateTime _lastCacheAttemptUtc;
     private bool _manuallyHidden;
     private bool _initialized;
     private bool _playbackSyncRunning, _playbackSyncDirty, _resumeAfterAutoPause;
@@ -31,7 +46,7 @@ public partial class MainWindow : Window
     private bool _subtitleZoomUnavailable;
     private readonly string _settingsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MiniVideoFloat", "settings.json");
     private HwndSource? _source;
-    private IntPtr _relayWindow, _relayThumbnail, _subtitleThumbnail;
+    private IntPtr _relayWindow, _relayThumbnail, _relayBottomThumbnail, _subtitleThumbnail, _subtitleBottomThumbnail;
     private IntPtr _mouseHook;
     private LowLevelMouseProc? _mouseHookProc;
     private WindowRelay.WindowRect? _relayOriginalPosition;
@@ -52,6 +67,9 @@ public partial class MainWindow : Window
         InitializeComponent();
         _timer.Tick += (_, _) => UpdateProgress();
         _imeTimer.Tick += (_, _) => RefreshImePanel();
+        _cacheTimer.Tick += async (_, _) => await CheckOfflineCacheAsync();
+        _frameTimer.Tick += async (_, _) => await UpdateRecentFramesAsync();
+        _fadeTimer.Tick += (_, _) => UpdateRelayThumbnail();
         Loaded += (_, _) => BuildContextMenu();
     }
 
@@ -74,6 +92,8 @@ public partial class MainWindow : Window
         _mouseHookProc = MouseHookCallback;
         _mouseHook = SetWindowsHookEx(14, _mouseHookProc, GetModuleHandle(null), 0);
         _imeTimer.Start();
+        _cacheTimer.Start();
+        _frameTimer.Start();
         RefreshImePanel();
         Dispatcher.BeginInvoke(new Action(ConnectRedFruit));
         AppUpdater.Start();
@@ -97,8 +117,8 @@ public partial class MainWindow : Window
 
     private void Shell_PreviewMouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
     {
-        if (e.OriginalSource is DependencyObject element && System.Windows.Media.VisualTreeHelper.GetParent(element) is System.Windows.Controls.Button) return;
-        if (e.OriginalSource is System.Windows.Controls.Button || e.OriginalSource is System.Windows.Controls.Primitives.Thumb) return;
+        for (var element = e.OriginalSource as DependencyObject; element is not null; element = System.Windows.Media.VisualTreeHelper.GetParent(element))
+            if (element is System.Windows.Controls.Button || element is System.Windows.Controls.Primitives.Thumb) return;
         try { DragMove(); SaveSettings(); } catch (InvalidOperationException) { }
     }
 
@@ -142,7 +162,7 @@ public partial class MainWindow : Window
         }
         menu.Items.Add(brightnessMenu);
         var subtitleMenu = new System.Windows.Controls.MenuItem { Header = _subtitleZoomUnavailable ? "字幕局部放大（暂不可用）" : "字幕局部放大（试验）" };
-        foreach (var option in new[] { ("关闭", 0), ("放大 25%", 1), ("放大 50%", 2) })
+        foreach (var option in new[] { ("关闭", 0), ("放大 25%", 1), ("放大 38%", 3), ("放大 50%", 2) })
         {
             var item = Menu(option.Item1, (_, _) => SetSubtitleZoom(option.Item2));
             item.IsCheckable = true; item.IsChecked = _subtitleZoomLevel == option.Item2;
@@ -188,7 +208,7 @@ public partial class MainWindow : Window
 
     private void SetSubtitleZoom(int value)
     {
-        _subtitleZoomLevel = value is 1 or 2 ? value : 0;
+        _subtitleZoomLevel = value is 1 or 2 or 3 ? value : 0;
         _subtitleZoomUnavailable = false;
         UpdateRelayThumbnail(); SaveSettings(); BuildContextMenu();
     }
@@ -261,6 +281,43 @@ public partial class MainWindow : Window
     private async void ConnectRedFruit()
     {
         await EnsureRedFruitConnectedAsync();
+    }
+
+    private async Task CheckOfflineCacheAsync()
+    {
+        if (_cacheChecking || IsVisible || _relayWindow == IntPtr.Zero || _playbackSyncRunning ||
+            DateTime.UtcNow - _lastCacheAttemptUtc < TimeSpan.FromSeconds(60)) return;
+        var source = _relayWindow;
+        var player = new WindowInteropHelper(this).Handle;
+        var sourcePid = _relayProcessId;
+        var data = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "hgplayer");
+        _cacheChecking = true;
+        _lastCacheAttemptUtc = DateTime.UtcNow;
+        try
+        {
+            var outcome = await Task.Run(() =>
+            {
+                var snapshot = RedFruitProgressReader.ReadLatest(Path.Combine(data, "hgplayer.db"));
+                if (snapshot is null || (snapshot.CurrentVideoId == _cacheCheckedVideoId && DateTime.UtcNow - _lastCacheSuccessUtc < TimeSpan.FromMinutes(5)) || !OfflineCacheStorage.CanAdd(data))
+                    return (RedFruitDownloadDialog.Result.Unavailable, (string?)null);
+                bool Safe()
+                {
+                    if (!WindowRelay.IsWindow(player) || !WindowRelay.IsWindow(source) || IsWindowVisible(player) || WindowRelay.IsMinimized(source)) return false;
+                    GetWindowThreadProcessId(GetForegroundWindow(), out var foregroundPid);
+                    return foregroundPid != sourcePid;
+                }
+                var result = RedFruitDownloadDialog.QueueNext(source, snapshot.CurrentIndex, snapshot.SeriesTitle, Safe);
+                return (result, snapshot.CurrentVideoId);
+            });
+            if (source == _relayWindow && outcome.Item1 is RedFruitDownloadDialog.Result.Submitted or RedFruitDownloadDialog.Result.NoWork)
+            {
+                _cacheCheckedVideoId = outcome.Item2;
+                _lastCacheSuccessUtc = DateTime.UtcNow;
+            }
+            Debug.WriteLine($"后台缓存检查：{outcome.Item1}");
+        }
+        catch (Exception ex) { Debug.WriteLine($"后台缓存检查失败：{ex.Message}"); }
+        finally { _cacheChecking = false; }
     }
 
     private async Task<bool> EnsureRedFruitConnectedAsync()
@@ -410,13 +467,32 @@ public partial class MainWindow : Window
     private void UpdateRelayThumbnail()
     {
         if (_relayThumbnail == IntPtr.Zero) return;
-        var opacity = (byte)Math.Round(_brightness * 255);
-        WindowRelay.Update(_relayThumbnail, 10, 11, 155, 98, _relayVisible,
-            _relayCrop is { } crop ? WindowRelay.FitCrop(crop, 155, 98) : null, opacity);
+        var opacity = (byte)Math.Round(Math.Clamp(_brightness * Opacity, 0, 1) * 255);
+        var (width, height) = WindowRelay.GetSourceSize(_relayThumbnail);
+        if (width <= 0 || height <= 0) return;
+        var source = _relayCrop ?? new WindowRelay.CropRect(0, 0, width, height);
+        var visible = WindowRelay.FitCrop(source, 155, 98);
+        if (_relayBottomThumbnail == IntPtr.Zero)
+            WindowRelay.Register(new WindowInteropHelper(this).Handle, _relayWindow, out _relayBottomThumbnail);
+        if (_relayBottomThumbnail != IntPtr.Zero)
+        {
+            var parts = WindowRelay.SplitForBadge(visible, 98);
+            WindowRelay.Update(_relayThumbnail, 10, 11, 155, 84, _relayVisible && !_loopActive, parts.Top, opacity);
+            WindowRelay.Update(_relayBottomThumbnail, 10, 95, 130, 14, _relayVisible && !_loopActive, parts.BottomLeft, opacity);
+        }
+        else WindowRelay.Update(_relayThumbnail, 10, 11, 155, 98, _relayVisible && !_loopActive, visible, opacity);
+        LoopImage.Opacity = _brightness;
+        if (_loopActive)
+        {
+            if (_subtitleThumbnail != IntPtr.Zero) WindowRelay.Update(_subtitleThumbnail, 10, 87, 155, 22, false);
+            if (_subtitleBottomThumbnail != IntPtr.Zero) WindowRelay.Update(_subtitleBottomThumbnail, 10, 95, 130, 14, false);
+            return;
+        }
 
         if (_subtitleZoomLevel == 0)
         {
             if (_subtitleThumbnail != IntPtr.Zero) WindowRelay.Update(_subtitleThumbnail, 10, 87, 155, 22, false);
+            if (_subtitleBottomThumbnail != IntPtr.Zero) WindowRelay.Update(_subtitleBottomThumbnail, 10, 95, 130, 14, false);
             return;
         }
         if (_subtitleThumbnail == IntPtr.Zero)
@@ -429,15 +505,20 @@ public partial class MainWindow : Window
                 return;
             }
         }
-        var (width, height) = WindowRelay.GetSourceSize(_relayThumbnail);
-        if (width <= 0 || height <= 0) return;
-        var source = _relayCrop ?? new WindowRelay.CropRect(0, 0, width, height);
-        var visible = WindowRelay.FitCrop(source, 155, 98);
         // Use the displayed width for the requested zoom; use the original
         // bottom so subtitles remain available even in a cropped portrait video.
         var captionSource = new WindowRelay.CropRect(visible.Left, source.Top, visible.Right, source.Bottom);
-        var band = WindowRelay.SubtitleBand(captionSource, 155, 22, _subtitleZoomLevel == 1 ? 1.25 : 1.5);
-        var update = WindowRelay.Update(_subtitleThumbnail, 10, 87, 155, 22, _relayVisible, band, opacity);
+        var band = WindowRelay.SubtitleBand(captionSource, 155, 22, _subtitleZoomLevel switch { 1 => 1.25, 3 => 1.38, _ => 1.5 });
+        if (_subtitleBottomThumbnail == IntPtr.Zero)
+            WindowRelay.Register(new WindowInteropHelper(this).Handle, _relayWindow, out _subtitleBottomThumbnail);
+        int update;
+        if (_subtitleBottomThumbnail != IntPtr.Zero)
+        {
+            var parts = WindowRelay.SplitForBadge(band, 22);
+            update = WindowRelay.Update(_subtitleThumbnail, 10, 87, 155, 8, _relayVisible, parts.Top, opacity);
+            WindowRelay.Update(_subtitleBottomThumbnail, 10, 95, 130, 14, _relayVisible, parts.BottomLeft, opacity);
+        }
+        else update = WindowRelay.Update(_subtitleThumbnail, 10, 87, 155, 22, _relayVisible, band, opacity);
         if (update < 0 && !_subtitleZoomUnavailable)
         {
             _subtitleZoomUnavailable = true;
@@ -466,6 +547,8 @@ public partial class MainWindow : Window
 
     private void StopWindowRelay()
     {
+        _loopActive = false; _loopClock.Reset(); _loopFrames = []; _recentFrames.Clear();
+        LoopImage.Visibility = Visibility.Collapsed; LoopBorder.Visibility = Visibility.Collapsed; LoopImage.Source = null;
         _resumeAfterAutoPause = false;
         _autoFitSucceeded = false;
         _playbackControlUnavailable = false;
@@ -479,7 +562,9 @@ public partial class MainWindow : Window
             try { WindowRelay.RestorePosition(_relayWindow, original); } catch (Exception ex) { Debug.WriteLine(ex); }
             _relayOriginalPosition = null;
         }
+        if (_subtitleBottomThumbnail != IntPtr.Zero) { WindowRelay.Unregister(_subtitleBottomThumbnail); _subtitleBottomThumbnail = IntPtr.Zero; }
         if (_subtitleThumbnail != IntPtr.Zero) { WindowRelay.Unregister(_subtitleThumbnail); _subtitleThumbnail = IntPtr.Zero; }
+        if (_relayBottomThumbnail != IntPtr.Zero) { WindowRelay.Unregister(_relayBottomThumbnail); _relayBottomThumbnail = IntPtr.Zero; }
         if (_relayThumbnail != IntPtr.Zero) { WindowRelay.Unregister(_relayThumbnail); _relayThumbnail = IntPtr.Zero; }
         if (_relayAudio.Count > 0) { try { AudioSessionControl.Restore(_relayAudio); } catch (Exception ex) { Debug.WriteLine(ex); } _relayAudio = []; }
         _relayWindow = IntPtr.Zero; _relayProcessId = 0; _relayVisible = true; _relayMuted = true; _relayCrop = null;
@@ -583,7 +668,7 @@ public partial class MainWindow : Window
                 _playbackSyncDirty = false;
                 var source = _relayWindow;
                 if (source == IntPtr.Zero) continue;
-                var shouldPause = !IsVisible || !_relayVisible;
+                var shouldPause = !_desiredVisible || !IsVisible || !_relayVisible || _loopActive;
                 if (!shouldPause && !_resumeAfterAutoPause) continue;
                 var result = await Task.Run(() => RedFruitPlaybackControl.SetPaused(source, shouldPause));
                 if (source != _relayWindow) continue;
@@ -659,8 +744,12 @@ public partial class MainWindow : Window
     }
 
     private void Close_Click(object sender, RoutedEventArgs e) => Close();
+    private void DismissAd_Click(object sender, RoutedEventArgs e) => HidePlayerWindow();
     private void Window_Closing(object? sender, CancelEventArgs e)
     {
+        _cacheTimer.Stop();
+        _frameTimer.Stop();
+        _fadeTimer.Stop();
         StopWindowRelay(); SaveSettings(); UnhookMouseShortcut();
     }
 
@@ -688,7 +777,7 @@ public partial class MainWindow : Window
             var s = JsonSerializer.Deserialize<Settings>(File.ReadAllText(_settingsPath));
             _savedLeft = s?.Left; _savedTop = s?.Top; _dark = s?.Dark ?? false;
             _brightness = s?.Brightness is > 0 ? Math.Clamp(s.Brightness, .2, 1) : .85;
-            _subtitleZoomLevel = s?.SubtitleZoom is 1 or 2 ? s.SubtitleZoom.Value : 0;
+            _subtitleZoomLevel = s?.SubtitleZoom is 1 or 2 or 3 ? s.SubtitleZoom.Value : 0;
             _videoWidth = s?.VideoWidth ?? 62; _videoHeight = s?.VideoHeight ?? 42;
             var gcd = GreatestCommonDivisor((int)_videoWidth, (int)_videoHeight);
             _aspectWidth = s?.AspectWidth > 0 ? s.AspectWidth : (int)_videoWidth / gcd;
@@ -699,14 +788,20 @@ public partial class MainWindow : Window
 
     private IntPtr MouseHookCallback(int code, IntPtr message, IntPtr data)
     {
-        const int WmXButtonDown = 0x020B;
+        const int WmXButtonDown = 0x020B, WmMouseWheel = 0x020A;
+        if (code >= 0 && message.ToInt32() == WmMouseWheel)
+        {
+            var hook = Marshal.PtrToStructure<MouseHookData>(data);
+            int delta = unchecked((short)(hook.MouseData >> 16));
+            if (_wheelGesture.Feed(delta, Environment.TickCount64)) Dispatcher.BeginInvoke(ToggleRecentLoop);
+        }
         if (code >= 0 && message.ToInt32() == WmXButtonDown)
         {
             var hook = Marshal.PtrToStructure<MouseHookData>(data);
             var button = (hook.MouseData >> 16) & 0xFFFF;
             if (button == 2)
             {
-                Dispatcher.BeginInvoke(() => { _manuallyHidden = IsVisible; RefreshImePanel(); });
+                Dispatcher.BeginInvoke(() => { _manuallyHidden = _desiredVisible; RefreshImePanel(); });
                 return new IntPtr(1);
             }
         }
@@ -731,33 +826,108 @@ public partial class MainWindow : Window
 
     private void SetPlayerVisibility(bool show)
     {
-        if (show == IsVisible) return;
+        if (show == _desiredVisible) return;
+        _desiredVisible = show;
         if (show) { ShowPlayerWindow(); return; }
-        if (_relayWindow != IntPtr.Zero)
-        {
-            _relayVisible = false;
-            KeepRelayOffscreen();
-            UpdateRelayThumbnail();
-        }
-        Hide();
+        _wheelGesture.Reset();
+        if (_loopActive) _loopClock.Stop(); else _recentFrames.Clear();
         RequestPlaybackSync();
+        FadeTo(0, () =>
+        {
+            if (_desiredVisible) return;
+            if (_relayWindow != IntPtr.Zero) { _relayVisible = false; KeepRelayOffscreen(); UpdateRelayThumbnail(); }
+            Hide();
+        });
     }
 
     private void ShowPlayerWindow()
     {
-        Show();
+        if (!IsVisible) { Opacity = 0; Show(); }
+        if (_loopActive) _loopClock.Start();
         if (_relayWindow != IntPtr.Zero)
         {
             _relayVisible = true;
             UpdateRelayThumbnail();
             RequestPlaybackSync();
         }
+        FadeTo(1);
+    }
+
+    private void FadeTo(double target, Action? completed = null)
+    {
+        double from = Opacity;
+        BeginAnimation(OpacityProperty, null);
+        Opacity = from;
+        var animation = new DoubleAnimation(from, target, TimeSpan.FromMilliseconds(150));
+        animation.Completed += (_, _) =>
+        {
+            if (_desiredVisible != (target > 0)) return;
+            BeginAnimation(OpacityProperty, null);
+            Opacity = target;
+            _fadeTimer.Stop();
+            UpdateRelayThumbnail();
+            completed?.Invoke();
+        };
+        _fadeTimer.Start();
+        BeginAnimation(OpacityProperty, animation);
     }
 
     private void UnhookMouseShortcut()
     {
         if (_mouseHook != IntPtr.Zero) { UnhookWindowsHookEx(_mouseHook); _mouseHook = IntPtr.Zero; }
         _mouseHookProc = null;
+    }
+
+    private async Task UpdateRecentFramesAsync()
+    {
+        if (!_desiredVisible || !IsVisible || !_relayVisible || _relayWindow == IntPtr.Zero) return;
+        if (_loopActive)
+        {
+            if (_loopFrames.Length == 0) return;
+            var lastInterval = _loopFrames.Length > 1 ? Math.Clamp(_loopFrames[^1].Milliseconds - _loopFrames[^2].Milliseconds, 30, 200) : 67;
+            var duration = Math.Max(1, _loopFrames[^1].Milliseconds - _loopFrames[0].Milliseconds + lastInterval);
+            var target = _loopFrames[0].Milliseconds + _loopClock.ElapsedMilliseconds % duration;
+            var index = Array.FindLastIndex(_loopFrames, f => f.Milliseconds <= target);
+            LoopImage.Source = _loopFrames[Math.Max(0, index)].Image;
+            return;
+        }
+        if (_capturingFrame || _relayThumbnail == IntPtr.Zero) return;
+        var source = _relayWindow;
+        var (width, height) = WindowRelay.GetSourceSize(_relayThumbnail);
+        if (width <= 0 || height <= 0) return;
+        var crop = WindowRelay.FitCrop(_relayCrop ?? new WindowRelay.CropRect(0, 0, width, height), 155, 98);
+        _capturingFrame = true;
+        var captureWatch = Stopwatch.StartNew();
+        try
+        {
+            var frame = await Task.Run(() => RecentVideoFrames.Capture(source, width, height, crop));
+            captureWatch.Stop();
+            _captureAverageMs = _captureAverageMs == 0 ? captureWatch.Elapsed.TotalMilliseconds : _captureAverageMs * .9 + captureWatch.Elapsed.TotalMilliseconds * .1;
+            var interval = _captureAverageMs > 80 ? 125 : _captureAverageMs > 50 ? 100 : 67;
+            if (_frameTimer.Interval.TotalMilliseconds != interval) _frameTimer.Interval = TimeSpan.FromMilliseconds(interval);
+            if (frame is not null && source == _relayWindow && _desiredVisible && IsVisible && _relayVisible && !_loopActive)
+                _recentFrames.Add(Environment.TickCount64, frame);
+        }
+        catch (Exception ex) { Debug.WriteLine($"缓存最近画面失败：{ex.Message}"); }
+        finally { _capturingFrame = false; }
+    }
+
+    private void ToggleRecentLoop()
+    {
+        if (_loopActive)
+        {
+            _loopActive = false; _loopClock.Reset(); _loopFrames = []; _recentFrames.Clear();
+            LoopImage.Source = null; LoopImage.Visibility = Visibility.Collapsed; LoopBorder.Visibility = Visibility.Collapsed;
+        }
+        else
+        {
+            var frames = _recentFrames.Snapshot();
+            if (frames.Length == 0) return;
+            _loopFrames = frames; _loopActive = true; _loopClock.Restart();
+            LoopImage.Source = frames[0].Image; LoopImage.Visibility = Visibility.Visible; LoopBorder.Visibility = Visibility.Visible;
+        }
+        UpdateRelayThumbnail();
+        RequestPlaybackSync();
     }
 
     [StructLayout(LayoutKind.Sequential)] private struct NativePoint { public int X, Y; }
@@ -780,4 +950,7 @@ public partial class MainWindow : Window
     [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")] private static extern nint SetWindowLongPtr(IntPtr hWnd, int index, nint value);
     [DllImport("user32.dll")] private static extern uint GetDpiForWindow(IntPtr hwnd);
     [DllImport("user32.dll")] private static extern uint GetDpiForSystem();
+    [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
+    [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out int processId);
 }
