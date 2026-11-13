@@ -8,9 +8,7 @@
     <Border x:Name="Shell" CornerRadius="8" Background="White" ClipToBounds="True" PreviewMouseLeftButtonDown="Shell_PreviewMouseLeftButtonDown">
         <Viewbox Stretch="Fill">
             <Grid Width="261" Height="191">
-                <Border x:Name="VideoFrame" Background="Black" Width="155" Height="98" Margin="10,11,0,0" HorizontalAlignment="Left" VerticalAlignment="Top" ClipToBounds="True">
-                    <Image x:Name="PixelVideo" Stretch="Fill" RenderOptions.BitmapScalingMode="NearestNeighbor" IsHitTestVisible="False"/>
-                </Border>
+                <Border x:Name="VideoFrame" Background="Black" Width="155" Height="98" Margin="10,11,0,0" HorizontalAlignment="Left" VerticalAlignment="Top" ClipToBounds="True"/>
                 <StackPanel Margin="176,17,8,0" VerticalAlignment="Top">
                     <TextBlock Text="◒ 搜狗输入法" FontSize="8" FontWeight="Bold" Foreground="#252525"/>
                     <TextBlock Text="打字跟随" FontSize="15" FontWeight="ExtraBold" Foreground="#161616" Margin="0,3,0,0"/>
@@ -21,11 +19,26 @@
                 </StackPanel>
                 <Grid Margin="10,128,10,5">
                     <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
-                    <StackPanel Grid.Column="0" HorizontalAlignment="Center"><TextBlock Text="▣" FontSize="24" FontWeight="Bold" Foreground="#2869FF" HorizontalAlignment="Center"/><TextBlock Text="壁纸" FontSize="12" HorizontalAlignment="Center"/></StackPanel>
-                    <StackPanel Grid.Column="1" HorizontalAlignment="Center"><TextBlock Text="▦" FontSize="24" FontWeight="Bold" Foreground="#00C983" HorizontalAlignment="Center"/><TextBlock Text="图标" FontSize="12" HorizontalAlignment="Center"/></StackPanel>
-                    <StackPanel Grid.Column="2" HorizontalAlignment="Center"><TextBlock Text="➤" FontSize="24" FontWeight="Bold" Foreground="#904BFF" HorizontalAlignment="Center"/><TextBlock Text="指针" FontSize="12" HorizontalAlignment="Center"/></StackPanel>
-                    <StackPanel Grid.Column="3" HorizontalAlignment="Center"><TextBlock Text="◕" FontSize="24" FontWeight="Bold" Foreground="#FFAA00" HorizontalAlignment="Center"/><TextBlock Text="桌面..." FontSize="12" HorizontalAlignment="Center"/></StackPanel>
-                    <StackPanel Grid.Column="4" HorizontalAlignment="Center"><Grid><TextBlock Text="✿" FontSize="24" FontWeight="Bold" Foreground="#FF700B" HorizontalAlignment="Center"/><Border Background="#FF493C" CornerRadius="7" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="15,0,-10,0"><TextBlock Text="99+" FontSize="7" Foreground="White" Margin="3,0"/></Border></Grid><TextBlock Text="皮肤" FontSize="12" HorizontalAlignment="Center"/></StackPanel>
+                    <StackPanel Grid.Column="0" HorizontalAlignment="Center">
+                        <Canvas Width="22" Height="24"><Rectangle Canvas.Left="2" Canvas.Top="2" Width="18" Height="18" RadiusX="3" RadiusY="3" Fill="#2869FF"/><Ellipse Canvas.Left="6" Canvas.Top="5" Width="4" Height="4" Fill="White"/><Path Data="M 4,18 L 11,11 L 14,14 L 17,11 L 19,13 L 19,19 L 4,19 Z" Fill="White"/></Canvas>
+                        <TextBlock Text="壁纸" FontSize="12" HorizontalAlignment="Center"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" HorizontalAlignment="Center">
+                        <Canvas Width="22" Height="24"><Rectangle Canvas.Left="2" Canvas.Top="2" Width="8" Height="8" RadiusX="1" RadiusY="1" Fill="#00C983"/><Rectangle Canvas.Left="12" Canvas.Top="2" Width="8" Height="8" RadiusX="1" RadiusY="1" Fill="#00C983"/><Rectangle Canvas.Left="2" Canvas.Top="12" Width="8" Height="8" RadiusX="1" RadiusY="1" Fill="#00C983"/><Rectangle Canvas.Left="12" Canvas.Top="12" Width="8" Height="8" RadiusX="1" RadiusY="1" Fill="#00C983"/></Canvas>
+                        <TextBlock Text="图标" FontSize="12" HorizontalAlignment="Center"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="2" HorizontalAlignment="Center">
+                        <Canvas Width="22" Height="24"><Path Data="M 1,2 L 21,11 L 13,13 L 16,19 L 13,21 L 10,15 L 6,20 Z" Fill="#904BFF"/></Canvas>
+                        <TextBlock Text="指针" FontSize="12" HorizontalAlignment="Center"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="3" HorizontalAlignment="Center">
+                        <Canvas Width="22" Height="24"><Ellipse Canvas.Left="1" Canvas.Top="2" Width="20" Height="20" Fill="#FFAA00"/><Path Data="M 13,4 L 8,13 L 12,13 L 10,20 L 17,10 L 13,10 Z" Fill="White"/></Canvas>
+                        <TextBlock Text="桌面..." FontSize="12" HorizontalAlignment="Center"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="4" HorizontalAlignment="Center">
+                        <Canvas Width="26" Height="24"><Path Data="M 6,4 L 10,2 Q 12,5 14,2 L 18,4 L 22,8 L 19,11 L 17,9 L 17,21 L 6,21 L 6,9 L 4,11 L 1,8 Z" Fill="#FF700B"/><Border Canvas.Left="15" Canvas.Top="0" Background="#FF493C" CornerRadius="7"><TextBlock Text="99+" FontSize="7" Foreground="White" Margin="3,0"/></Border></Canvas>
+                        <TextBlock Text="皮肤" FontSize="12" HorizontalAlignment="Center"/>
+                    </StackPanel>
                 </Grid>
                 <Button Width="61" Height="27" Margin="178,72,0,0" HorizontalAlignment="Left" VerticalAlignment="Top" Click="OpenSkin_Click" Focusable="False">
                     <Button.Template><ControlTemplate TargetType="Button"><Border Background="Transparent"/></ControlTemplate></Button.Template>

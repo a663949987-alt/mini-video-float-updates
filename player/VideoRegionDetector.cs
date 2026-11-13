@@ -1,5 +1,4 @@
 using System.Drawing;
-using System.IO;
 
 namespace MiniVideoFloat;
 
@@ -24,13 +23,6 @@ internal static class VideoRegionDetector
             {
                 var layout = DetectRedFruitLayout(bitmap);
                 if (layout is not null) return layout;
-                try
-                {
-                    var debugDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MiniVideoFloat", "debug");
-                    Directory.CreateDirectory(debugDirectory);
-                    bitmap.Save(Path.Combine(debugDirectory, "connection-frame.png"), System.Drawing.Imaging.ImageFormat.Png);
-                }
-                catch { }
             }
             var current = Sample(bitmap);
             if (previous is not null)
