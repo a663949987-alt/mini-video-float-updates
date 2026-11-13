@@ -302,6 +302,7 @@ public partial class MainWindow : Window
             System.Windows.MessageBox.Show("无法转播所选窗口。", "实时转播", MessageBoxButton.OK, MessageBoxImage.Information); return;
         }
         _relayWindow = selected.Handle; _relayProcessId = selected.ProcessId; _relayVisible = true;
+        _resumeAfterAutoPause = AutoPauseState.Matches(_relayProcessId);
         if (WindowRelay.IsMinimized(_relayWindow)) WindowRelay.RestoreMinimized(_relayWindow);
         if (WindowRelay.HideFromAltTab(_relayWindow, out var originalStyle))
             _relayOriginalExtendedStyle = originalStyle;
@@ -492,7 +493,10 @@ public partial class MainWindow : Window
             if (paused is null || source != _relayWindow || !IsVisible) return;
             var result = await Task.Run(() => RedFruitPlaybackControl.SetPaused(source, !paused.Value));
             if (source == _relayWindow && result is RedFruitPlaybackControl.ChangeResult.Changed or RedFruitPlaybackControl.ChangeResult.AlreadySet)
+            {
                 _resumeAfterAutoPause = false;
+                AutoPauseState.Clear();
+            }
         }
         catch (Exception ex) { Debug.WriteLine($"切换红果播放状态失败: {ex.Message}"); }
         finally
@@ -534,9 +538,15 @@ public partial class MainWindow : Window
                 var unavailable = result is RedFruitPlaybackControl.ChangeResult.Unavailable or RedFruitPlaybackControl.ChangeResult.Unconfirmed;
                 if (_playbackControlUnavailable != unavailable) { _playbackControlUnavailable = unavailable; BuildContextMenu(); }
                 if (shouldPause && result is RedFruitPlaybackControl.ChangeResult.Changed or RedFruitPlaybackControl.ChangeResult.Unconfirmed)
+                {
                     _resumeAfterAutoPause = true;
+                    AutoPauseState.Remember(_relayProcessId);
+                }
                 else if (!shouldPause && result is RedFruitPlaybackControl.ChangeResult.Changed or RedFruitPlaybackControl.ChangeResult.AlreadySet)
+                {
                     _resumeAfterAutoPause = false;
+                    AutoPauseState.Clear();
+                }
             }
         }
         catch (Exception ex) { Debug.WriteLine($"同步红果播放状态失败: {ex.Message}"); }

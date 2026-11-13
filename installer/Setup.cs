@@ -86,7 +86,7 @@ internal static class Setup
         CreateShortcut(start);
         using (var key = Registry.CurrentUser.CreateSubKey(RegistryKey))
         {
-            key.SetValue("DisplayName", AppName); key.SetValue("DisplayVersion", "1.0.4");
+            key.SetValue("DisplayName", AppName); key.SetValue("DisplayVersion", "1.0.5");
             key.SetValue("DisplayIcon", Player); key.SetValue("InstallLocation", Root);
             key.SetValue("UninstallString", "\"" + uninstall + "\" --uninstall");
             key.SetValue("NoModify", 1, RegistryValueKind.DWord); key.SetValue("NoRepair", 1, RegistryValueKind.DWord);
