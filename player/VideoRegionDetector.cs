@@ -112,6 +112,10 @@ internal static class VideoRegionDetector
             var score = sum / count;
             if (score > bestColumn) { bestColumn = score; left = x; }
         }
+        // Prefer a continuous black side bar over a strong edge inside the scene.
+        // A moving actor or a dark background can otherwise win the edge score.
+        var blackLeft = FindLeftBlackMargin(bitmap);
+        if (blackLeft > 0) { left = blackLeft; bestColumn = Math.Max(bestColumn, 40); }
         if (bestColumn < 40) return null;
         double bestRow = 0; var top = 0;
         for (var y = height / 25; y < height / 4; y += 2)
@@ -129,9 +133,57 @@ internal static class VideoRegionDetector
             var score = sum / count;
             if (score > bestRow) { bestRow = score; top = y; }
         }
-        return bestRow >= 30 && left > 0 && top > 0
-            ? new WindowRelay.CropRect(left, top, width, height)
-            : null;
+        if (bestRow < 30 || left <= 0 || top <= 0) return null;
+        var right = TrimRightBlackMargin(bitmap, left, top);
+        return new WindowRelay.CropRect(left, top, right, height);
+    }
+
+    private static int TrimRightBlackMargin(Bitmap image, int left, int top)
+    {
+        var width = image.Width; var height = image.Height;
+        var maxMargin = width * 2 / 5;
+        var samplesTop = top + (height - top) / 8;
+        var samplesBottom = height - (height - top) / 8;
+        var consecutiveContent = 0;
+        for (var x = width - 1; x >= Math.Max(left + width / 5, width - maxMargin); x--)
+        {
+            var dark = 0; var total = 0;
+            for (var y = samplesTop; y < samplesBottom; y += Math.Max(1, (samplesBottom - samplesTop) / 32))
+            {
+                var p = image.GetPixel(x, y);
+                if (Math.Max(p.R, Math.Max(p.G, p.B)) < 16) dark++;
+                total++;
+            }
+            if (total > 0 && dark >= total * .9) consecutiveContent = 0;
+            else if (++consecutiveContent >= 4)
+            {
+                var right = x + consecutiveContent;
+                return width - right >= Math.Max(8, width / 100) ? right : width;
+            }
+        }
+        return width;
+    }
+
+    private static int FindLeftBlackMargin(Bitmap image)
+    {
+        var width = image.Width; var height = image.Height; var contentRun = 0;
+        for (var x = 0; x < width * 2 / 5; x++)
+        {
+            var dark = 0; var total = 0;
+            for (var y = height / 5; y < height * 4 / 5; y += Math.Max(1, height / 40))
+            {
+                var p = image.GetPixel(x, y);
+                if (Math.Max(p.R, Math.Max(p.G, p.B)) < 16) dark++;
+                total++;
+            }
+            if (total > 0 && dark >= total * .9) contentRun = 0;
+            else if (++contentRun >= 4)
+            {
+                var edge = x - contentRun + 1;
+                return edge >= Math.Max(8, width / 100) ? edge : 0;
+            }
+        }
+        return 0;
     }
 
     private static float[] Sample(Bitmap bitmap)

@@ -93,9 +93,9 @@ internal static class WindowRelay
         return GetWindowLongPtr(hwnd, -20).ToInt64() == style;
     }
 
-    internal static void Update(IntPtr thumbnail, int left, int top, int width, int height, bool visible, CropRect? sourceCrop = null, byte opacity = 255)
+    internal static int Update(IntPtr thumbnail, int left, int top, int width, int height, bool visible, CropRect? sourceCrop = null, byte opacity = 255)
     {
-        if (thumbnail == IntPtr.Zero) return;
+        if (thumbnail == IntPtr.Zero) return unchecked((int)0x80070057);
         var properties = new ThumbnailProperties
         {
             Flags = 0x01 | 0x04 | 0x08 | 0x10 | (sourceCrop.HasValue ? 0x02u : 0u),
@@ -105,7 +105,7 @@ internal static class WindowRelay
             Visible = visible,
             SourceClientAreaOnly = true
         };
-        DwmUpdateThumbnailProperties(thumbnail, ref properties);
+        return DwmUpdateThumbnailProperties(thumbnail, ref properties);
     }
 
     internal static CropRect CenterCrop(IntPtr thumbnail, int ratioWidth, int ratioHeight)
@@ -148,6 +148,19 @@ internal static class WindowRelay
             var top = crop.Top + (height - fittedHeight) / 2;
             return new CropRect(crop.Left, top, crop.Right, top + fittedHeight);
         }
+    }
+
+    // Zoom a centred band near the bottom of the detected video; it includes
+    // subtitles that are already part of the picture, without OCR.
+    internal static CropRect SubtitleBand(CropRect video, int destinationWidth, int destinationHeight, double zoom)
+    {
+        var videoWidth = Math.Max(1, video.Right - video.Left);
+        var videoHeight = Math.Max(1, video.Bottom - video.Top);
+        var width = Math.Clamp((int)Math.Round(videoWidth / Math.Max(1, zoom)), 1, videoWidth);
+        var height = Math.Clamp((int)Math.Round(width * destinationHeight / (double)destinationWidth), 1, videoHeight);
+        var left = video.Left + (videoWidth - width) / 2;
+        var bottom = video.Bottom - Math.Min(videoHeight - height, Math.Max(0, (int)Math.Round(videoHeight * .02)));
+        return new CropRect(left, bottom - height, left + width, bottom);
     }
 
     internal static (int Width, int Height) GetSourceSize(IntPtr thumbnail)

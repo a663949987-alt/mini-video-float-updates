@@ -25,10 +25,13 @@ public partial class MainWindow : Window
     private DateTime _lastPlaybackCheckUtc;
     private bool _autoFitInProgress, _autoFitSucceeded, _playbackControlUnavailable;
     private DateTime _lastAutoFitUtc;
+    private DateTime _lastTrayHideUtc;
     private double _brightness = .85;
+    private int _subtitleZoomLevel;
+    private bool _subtitleZoomUnavailable;
     private readonly string _settingsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MiniVideoFloat", "settings.json");
     private HwndSource? _source;
-    private IntPtr _relayWindow, _relayThumbnail;
+    private IntPtr _relayWindow, _relayThumbnail, _subtitleThumbnail;
     private IntPtr _mouseHook;
     private LowLevelMouseProc? _mouseHookProc;
     private WindowRelay.WindowRect? _relayOriginalPosition;
@@ -138,6 +141,14 @@ public partial class MainWindow : Window
             brightnessMenu.Items.Add(item);
         }
         menu.Items.Add(brightnessMenu);
+        var subtitleMenu = new System.Windows.Controls.MenuItem { Header = _subtitleZoomUnavailable ? "字幕局部放大（暂不可用）" : "字幕局部放大（试验）" };
+        foreach (var option in new[] { ("关闭", 0), ("放大 25%", 1), ("放大 50%", 2) })
+        {
+            var item = Menu(option.Item1, (_, _) => SetSubtitleZoom(option.Item2));
+            item.IsCheckable = true; item.IsChecked = _subtitleZoomLevel == option.Item2;
+            subtitleMenu.Items.Add(item);
+        }
+        menu.Items.Add(subtitleMenu);
         menu.Items.Add(Menu("隐藏播放器", (_, _) => HidePlayerWindow()));
         menu.Items.Add(new System.Windows.Controls.Separator());
         menu.Items.Add(Menu("隐藏转播源窗口（Alt+Tab）", (_, _) => HideRelaySourceFromAltTab()));
@@ -173,6 +184,13 @@ public partial class MainWindow : Window
         _brightness = Math.Clamp(value, .2, 1);
         UpdateRelayThumbnail();
         SaveSettings(); BuildContextMenu();
+    }
+
+    private void SetSubtitleZoom(int value)
+    {
+        _subtitleZoomLevel = value is 1 or 2 ? value : 0;
+        _subtitleZoomUnavailable = false;
+        UpdateRelayThumbnail(); SaveSettings(); BuildContextMenu();
     }
 
     private void ShowVideoSizeDialog()
@@ -303,6 +321,8 @@ public partial class MainWindow : Window
         }
         _relayWindow = selected.Handle; _relayProcessId = selected.ProcessId; _relayVisible = true;
         _resumeAfterAutoPause = AutoPauseState.Matches(_relayProcessId);
+        RedFruitTrayIcon.Hide(_relayProcessId);
+        _lastTrayHideUtc = DateTime.UtcNow;
         if (WindowRelay.IsMinimized(_relayWindow)) WindowRelay.RestoreMinimized(_relayWindow);
         if (WindowRelay.HideFromAltTab(_relayWindow, out var originalStyle))
             _relayOriginalExtendedStyle = originalStyle;
@@ -389,10 +409,37 @@ public partial class MainWindow : Window
 
     private void UpdateRelayThumbnail()
     {
-        if (_relayThumbnail != IntPtr.Zero)
-            WindowRelay.Update(_relayThumbnail, 10, 11, 155, 98, _relayVisible,
-                _relayCrop is { } crop ? WindowRelay.FitCrop(crop, 155, 98) : null,
-                (byte)Math.Round(_brightness * 255));
+        if (_relayThumbnail == IntPtr.Zero) return;
+        var opacity = (byte)Math.Round(_brightness * 255);
+        WindowRelay.Update(_relayThumbnail, 10, 11, 155, 98, _relayVisible,
+            _relayCrop is { } crop ? WindowRelay.FitCrop(crop, 155, 98) : null, opacity);
+
+        if (_subtitleZoomLevel == 0)
+        {
+            if (_subtitleThumbnail != IntPtr.Zero) WindowRelay.Update(_subtitleThumbnail, 10, 87, 155, 22, false);
+            return;
+        }
+        if (_subtitleThumbnail == IntPtr.Zero)
+        {
+            var result = WindowRelay.Register(new WindowInteropHelper(this).Handle, _relayWindow, out _subtitleThumbnail);
+            if (result < 0 || _subtitleThumbnail == IntPtr.Zero)
+            {
+                _subtitleZoomUnavailable = true;
+                Debug.WriteLine($"字幕局部放大不可用: 0x{result:X8}");
+                return;
+            }
+        }
+        var (width, height) = WindowRelay.GetSourceSize(_relayThumbnail);
+        if (width <= 0 || height <= 0) return;
+        var source = _relayCrop ?? new WindowRelay.CropRect(0, 0, width, height);
+        var band = WindowRelay.SubtitleBand(source, 155, 22, _subtitleZoomLevel == 1 ? 1.25 : 1.5);
+        var update = WindowRelay.Update(_subtitleThumbnail, 10, 87, 155, 22, _relayVisible, band, opacity);
+        if (update < 0 && !_subtitleZoomUnavailable)
+        {
+            _subtitleZoomUnavailable = true;
+            Debug.WriteLine($"字幕放大更新失败: 0x{update:X8}");
+            BuildContextMenu();
+        }
     }
 
     private void ShowRelayCropDialog()
@@ -428,6 +475,7 @@ public partial class MainWindow : Window
             try { WindowRelay.RestorePosition(_relayWindow, original); } catch (Exception ex) { Debug.WriteLine(ex); }
             _relayOriginalPosition = null;
         }
+        if (_subtitleThumbnail != IntPtr.Zero) { WindowRelay.Unregister(_subtitleThumbnail); _subtitleThumbnail = IntPtr.Zero; }
         if (_relayThumbnail != IntPtr.Zero) { WindowRelay.Unregister(_relayThumbnail); _relayThumbnail = IntPtr.Zero; }
         if (_relayAudio.Count > 0) { try { AudioSessionControl.Restore(_relayAudio); } catch (Exception ex) { Debug.WriteLine(ex); } _relayAudio = []; }
         _relayWindow = IntPtr.Zero; _relayProcessId = 0; _relayVisible = true; _relayMuted = true; _relayCrop = null;
@@ -587,6 +635,11 @@ public partial class MainWindow : Window
                 _lastMuteAttemptUtc = DateTime.UtcNow;
                 try { _relayAudio = AudioSessionControl.MuteProcess(_relayProcessId); } catch (Exception ex) { Debug.WriteLine(ex); }
             }
+            if (_relayProcessId > 0 && DateTime.UtcNow - _lastTrayHideUtc >= TimeSpan.FromSeconds(5))
+            {
+                _lastTrayHideUtc = DateTime.UtcNow;
+                RedFruitTrayIcon.Hide(_relayProcessId);
+            }
             if (DateTime.UtcNow - _lastPlaybackCheckUtc >= TimeSpan.FromSeconds(3) && (!IsVisible || !_relayVisible || _resumeAfterAutoPause))
             {
                 _lastPlaybackCheckUtc = DateTime.UtcNow;
@@ -631,6 +684,7 @@ public partial class MainWindow : Window
             var s = JsonSerializer.Deserialize<Settings>(File.ReadAllText(_settingsPath));
             _savedLeft = s?.Left; _savedTop = s?.Top; _dark = s?.Dark ?? false;
             _brightness = s?.Brightness is > 0 ? Math.Clamp(s.Brightness, .2, 1) : .85;
+            _subtitleZoomLevel = s?.SubtitleZoom is 1 or 2 ? s.SubtitleZoom.Value : 0;
             _videoWidth = s?.VideoWidth ?? 62; _videoHeight = s?.VideoHeight ?? 42;
             var gcd = GreatestCommonDivisor((int)_videoWidth, (int)_videoHeight);
             _aspectWidth = s?.AspectWidth > 0 ? s.AspectWidth : (int)_videoWidth / gcd;
@@ -707,9 +761,9 @@ public partial class MainWindow : Window
     private delegate IntPtr LowLevelMouseProc(int code, IntPtr message, IntPtr data);
     private void SaveSettings()
     {
-        try { Directory.CreateDirectory(Path.GetDirectoryName(_settingsPath)!); File.WriteAllText(_settingsPath, JsonSerializer.Serialize(new Settings(Left, Top, _dark, _videoWidth, _videoHeight, _aspectWidth, _aspectHeight, _brightness))); } catch { }
+        try { Directory.CreateDirectory(Path.GetDirectoryName(_settingsPath)!); File.WriteAllText(_settingsPath, JsonSerializer.Serialize(new Settings(Left, Top, _dark, _videoWidth, _videoHeight, _aspectWidth, _aspectHeight, _brightness, _subtitleZoomLevel))); } catch { }
     }
-    private sealed record Settings(double Left, double Top, bool Dark, double VideoWidth = 62, double VideoHeight = 42, int AspectWidth = 31, int AspectHeight = 21, double Brightness = .85);
+    private sealed record Settings(double Left, double Top, bool Dark, double VideoWidth = 62, double VideoHeight = 42, int AspectWidth = 31, int AspectHeight = 21, double Brightness = .85, int? SubtitleZoom = null);
     private sealed class NativeWindowOwner(IntPtr handle) : Forms.IWin32Window { public IntPtr Handle { get; } = handle; }
 
     [DllImport("user32.dll", SetLastError = true)] private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint modifiers, uint vk);
