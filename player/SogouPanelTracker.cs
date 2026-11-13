@@ -36,7 +36,8 @@ internal static class SogouPanelTracker
         var screen = System.Windows.Forms.Screen.FromRectangle(new System.Drawing.Rectangle(anchor.Left, anchor.Top, Math.Max(1, anchor.Right - anchor.Left), Math.Max(1, anchor.Bottom - anchor.Top)));
         var work = screen.WorkingArea;
         var x = Math.Clamp(anchor.Left, work.Left, Math.Max(work.Left, work.Right - 261));
-        var y = anchor.Top - 191 - 4;
+        // 搜狗状态皮肤的窗口顶部带透明留白，向下补偿后贴近可见皮肤。
+        var y = anchor.Top - 191 + 27;
         if (y < work.Top) y = anchor.Bottom + 4;
         y = Math.Clamp(y, work.Top, Math.Max(work.Top, work.Bottom - 191));
         SetWindowPos(hwnd, 0, x, y, 0, 0, 0x0001 | 0x0004 | 0x0010);
