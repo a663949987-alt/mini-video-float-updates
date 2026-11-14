@@ -31,18 +31,29 @@ internal static class SogouPanelTracker
         return status ?? candidate;
     }
 
-    internal static void Place(nint hwnd, Bounds anchor, bool bringToFront)
+    internal static (int X, int Y) CalculatePosition(Bounds anchor, System.Drawing.Rectangle work, int width, int height)
+    {
+        var x = Math.Clamp(anchor.Left, work.Left, Math.Max(work.Left, work.Right - width));
+        // 搜狗状态皮肤的窗口顶部带透明留白，向下补偿后贴近可见皮肤。
+        var inset = Math.Min(32, Math.Max(0, anchor.Bottom - anchor.Top));
+        var y = anchor.Top - height + inset;
+        if (y < work.Top) y = anchor.Bottom + 4;
+        y = Math.Clamp(y, work.Top, Math.Max(work.Top, work.Bottom - height));
+        return (x, y);
+    }
+
+    internal static (int X, int Y)? Place(nint hwnd, Bounds anchor, bool bringToFront)
     {
         var screen = System.Windows.Forms.Screen.FromRectangle(new System.Drawing.Rectangle(anchor.Left, anchor.Top, Math.Max(1, anchor.Right - anchor.Left), Math.Max(1, anchor.Bottom - anchor.Top)));
-        var work = screen.WorkingArea;
-        var x = Math.Clamp(anchor.Left, work.Left, Math.Max(work.Left, work.Right - 261));
-        // 搜狗状态皮肤的窗口顶部带透明留白，向下补偿后贴近可见皮肤。
-        var y = anchor.Top - 191 + 32;
-        if (y < work.Top) y = anchor.Bottom + 4;
-        y = Math.Clamp(y, work.Top, Math.Max(work.Top, work.Bottom - 191));
+        var width = 261; var height = 191;
+        if (GetWindowRect(hwnd, out var window) && window.Right > window.Left && window.Bottom > window.Top)
+        {
+            width = window.Right - window.Left; height = window.Bottom - window.Top;
+        }
+        var (x, y) = CalculatePosition(anchor, screen.WorkingArea, width, height);
         // 仅在浮窗重新显示时放到普通窗口层前方；跟随移动时不改变层级。
         var flags = 0x0001u | 0x0010u | (bringToFront ? 0u : 0x0004u);
-        SetWindowPos(hwnd, 0, x, y, 0, 0, flags);
+        return SetWindowPos(hwnd, 0, x, y, 0, 0, flags) ? (x, y) : null;
     }
 
     [StructLayout(LayoutKind.Sequential)] private struct Rect { public int Left, Top, Right, Bottom; }

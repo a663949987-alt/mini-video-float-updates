@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+ <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0-windows</TargetFramework><UseWPF>true</UseWPF><UseWindowsForms>true</UseWindowsForms><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
+ <ItemGroup>
+  <Compile Include="../../player/RedFruitStartupSize.cs" Link="RedFruitStartupSize.cs"/>
+  <Compile Include="../../player/WindowRelay.cs" Link="WindowRelay.cs"/>
+  <Compile Include="../../player/SogouPanelTracker.cs" Link="SogouPanelTracker.cs"/>
+  <Compile Include="../../player/SubtitleRegionDetector.cs" Link="SubtitleRegionDetector.cs"/>
+  <Compile Include="../../player/RecentVideoFrames.cs" Link="RecentVideoFrames.cs"/>
+  <Compile Include="../../player/CropSelectionForm.cs" Link="CropSelectionForm.cs"/>
+ </ItemGroup>
+</Project>

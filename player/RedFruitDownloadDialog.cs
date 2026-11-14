@@ -11,21 +11,33 @@ internal static class RedFruitDownloadDialog
 {
     internal enum Result { Unavailable, Interrupted, NoWork, Submitted, Unconfirmed }
 
-    internal static Result QueueNext(IntPtr source, int expectedIndex, string expectedTitle, Func<bool> mayContinue)
+    internal static Result QueueWithRetry(IntPtr source, int expectedIndex, string expectedTitle, Func<bool> mayContinue, bool firstEpisodes = false, Action<string>? diagnostic = null, int nextCount = 2)
+    {
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            string? detail = null;
+            var result = QueueNext(source, expectedIndex, expectedTitle, mayContinue, firstEpisodes, message => { detail = message; diagnostic?.Invoke(message); }, nextCount);
+            if (result != Result.Unavailable || detail?.Contains("ElementNotAvailableException", StringComparison.Ordinal) != true || !mayContinue()) return result;
+            Thread.Sleep(500);
+        }
+        return Result.Unavailable;
+    }
+
+    internal static Result QueueNext(IntPtr source, int expectedIndex, string expectedTitle, Func<bool> mayContinue, bool firstEpisodes = false, Action<string>? diagnostic = null, int nextCount = 2)
     {
         bool opened = false, submitted = false;
         AutomationElement? root = null;
         IntPtr renderer = IntPtr.Zero;
         try
         {
-            if (!mayContinue() || RedFruitPlaybackControl.GetPaused(source) != true) return Result.Interrupted;
+            if (!mayContinue() || RedFruitPlaybackControl.GetPaused(source) != true) { diagnostic?.Invoke("未能确认暂停"); return Result.Interrupted; }
             root = AutomationElement.FromHandle(source);
             renderer = FindRenderer(source);
-            if (renderer == IntPtr.Zero) return Result.Unavailable;
+            if (renderer == IntPtr.Zero) { diagnostic?.Invoke("没有找到渲染窗口"); return Result.Unavailable; }
             var all = Find(root);
-            if (FindMask(all) is not null) return Result.Unavailable;
+            if (FindMask(all) is not null) { diagnostic?.Invoke("已有下载弹窗"); return Result.Unavailable; }
             var button = all.SingleOrDefault(e => Has(e, "rail-item") && e.Current.Name == "下载");
-            if (button is null || !mayContinue() || !Click(renderer, button)) return Result.Unavailable;
+            if (button is null || !mayContinue() || !Click(renderer, button)) { diagnostic?.Invoke("找不到下载按钮或无法点击"); return Result.Unavailable; }
             opened = true;
             AutomationElement? mask = null;
             for (int attempt = 0; attempt < 20 && mask is null; attempt++)
@@ -33,33 +45,54 @@ internal static class RedFruitDownloadDialog
                 Thread.Sleep(100);
                 mask = FindMask(Find(root));
             }
-            if (mask is null) return Result.Unconfirmed;
+            if (mask is null) { diagnostic?.Invoke("点击后未识别下载弹窗"); return Result.Unconfirmed; }
             if (!mayContinue()) return Result.Interrupted;
             var elements = Find(mask);
             var title = elements.SingleOrDefault(e => Has(e, "modal-title"));
             if (string.IsNullOrWhiteSpace(expectedTitle) || title is null ||
                 !(title.Current.Name.Contains(expectedTitle, StringComparison.Ordinal) || Find(title).Any(e => e.Current.Name.Contains(expectedTitle, StringComparison.Ordinal))))
-                return Result.Unavailable;
+                { diagnostic?.Invoke("弹窗标题与短剧不匹配或不可访问"); return Result.Unavailable; }
             var episodes = elements.Where(e => Has(e, "dl-ep")).ToArray();
             int current = Array.FindIndex(episodes, e => Has(e, "cur"));
-            if (current != expectedIndex || current < 0 || current + 2 >= episodes.Length) return Result.Unavailable;
-            if (episodes.Any(e => Has(e, "on"))) return Result.Unavailable;
+            if (current != expectedIndex || current < 0) { diagnostic?.Invoke($"弹窗集数不匹配：{current}/{expectedIndex}，共{episodes.Length}项"); return Result.Unavailable; }
+            if (episodes.Any(e => Has(e, "on"))) { diagnostic?.Invoke("弹窗已有选中项"); return Result.Unavailable; }
             int selected = 0;
-            for (int i = current + 1; i <= current + 2; i++)
+            int start = firstEpisodes ? 0 : current + 1;
+            int end = firstEpisodes ? episodes.Length : Math.Min(episodes.Length, current + 1 + Math.Clamp(nextCount, 1, 10));
+            for (int i = start; i < end; i++)
             {
+                episodes = Find(mask).Where(e => Has(e, "dl-ep")).ToArray();
+                if (i >= episodes.Length) return Result.Unconfirmed;
                 var episode = episodes[i];
                 // Already downloading or completed entries are disabled by RedFruit.
                 if (Has(episode, "off") || Has(episode, "done")) continue;
-                if (!mayContinue() || !Click(renderer, episode)) return Result.Interrupted;
-                Thread.Sleep(250);
+                if (firstEpisodes && selected >= 10) break;
+                if (!mayContinue()) return Result.Interrupted;
+                if (episode.TryGetCurrentPattern(ScrollItemPattern.Pattern, out var scroll)) ((ScrollItemPattern)scroll).ScrollIntoView();
+                bool confirmed = false;
+                for (int attempt = 0; attempt < 3 && mayContinue(); attempt++)
+                {
+                    episodes = Find(mask).Where(e => Has(e, "dl-ep")).ToArray();
+                    if (i >= episodes.Length) return Result.Unconfirmed;
+                    if (Has(episodes[i], "on")) { confirmed = true; break; }
+                    if (!Click(renderer, episodes[i])) return Result.Interrupted;
+                    for (int wait = 0; wait < 5 && mayContinue(); wait++)
+                    {
+                        Thread.Sleep(150);
+                        episodes = Find(mask).Where(e => Has(e, "dl-ep")).ToArray();
+                        if (i < episodes.Length && Has(episodes[i], "on")) { confirmed = true; break; }
+                    }
+                    if (confirmed) break;
+                }
+                if (!confirmed) { diagnostic?.Invoke($"第{i + 1}集未确认选中"); return Result.Unconfirmed; }
                 selected++;
             }
             if (selected == 0) return Result.NoWork;
             elements = Find(mask);
             episodes = elements.Where(e => Has(e, "dl-ep")).ToArray();
             if (episodes.Count(e => Has(e, "on")) != selected ||
-                episodes.Where(e => Has(e, "on")).Any(e => !episodes.Skip(current + 1).Take(2).Contains(e)))
-                return Result.Unconfirmed;
+                episodes.Select((e, index) => (e, index)).Any(x => Has(x.e, "on") && (x.index < start || x.index >= end)))
+                { diagnostic?.Invoke($"选择结果未确认：期望{selected}项，显示{episodes.Count(e => Has(e, "on"))}项"); return Result.Unconfirmed; }
             var submit = elements.SingleOrDefault(e => e.Current.ControlType == ControlType.Button && Has(e, "btn-primary"));
             if (!mayContinue() || submit is null || !submit.Current.IsEnabled || !Click(renderer, submit)) return Result.Interrupted;
             submitted = true;
@@ -68,7 +101,7 @@ internal static class RedFruitDownloadDialog
         }
         catch (Exception ex) when (ex is ElementNotAvailableException or InvalidOperationException or COMException)
         {
-            return Result.Unavailable;
+            diagnostic?.Invoke($"下载弹窗读取异常：{ex.GetType().Name}"); return Result.Unavailable;
         }
         finally
         {

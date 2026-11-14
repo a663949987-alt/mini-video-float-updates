@@ -22,6 +22,15 @@ internal static class AudioSessionControl
         return sessions.Count == 0 || sessions.All(s => { ((ISimpleAudioVolume)s.Volume).GetMute(out var muted); return muted; });
     }
 
+    internal static void SetProcessMuted(int processId, bool muted)
+    {
+        foreach (var state in GetSessions(processId))
+        {
+            var context = Guid.Empty;
+            ((ISimpleAudioVolume)state.Volume).SetMute(muted, ref context);
+        }
+    }
+
     internal static void Restore(IEnumerable<AudioSessionMuteState> states)
     {
         foreach (var state in states) { var context = Guid.Empty; ((ISimpleAudioVolume)state.Volume).SetMute(state.WasMuted, ref context); }

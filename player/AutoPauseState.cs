@@ -31,7 +31,9 @@ internal static class AutoPauseState
             using var process = Process.GetProcessById(processId);
             var token = new Token(processId, process.StartTime.ToUniversalTime().Ticks);
             Directory.CreateDirectory(Path.GetDirectoryName(StatePath)!);
-            File.WriteAllText(StatePath, JsonSerializer.Serialize(token));
+            var temporary = StatePath + ".tmp";
+            File.WriteAllText(temporary, JsonSerializer.Serialize(token));
+            File.Move(temporary, StatePath, true);
         }
         catch (Exception ex) { Debug.WriteLine($"保存自动暂停状态失败: {ex.Message}"); }
     }

@@ -6,16 +6,61 @@ namespace MiniVideoFloat;
 
 internal static class WindowRelay
 {
-    private const long WsExToolWindow = 0x00000080, WsExAppWindow = 0x00040000;
+    private const long WsExToolWindow = 0x00000080, WsExAppWindow = 0x00040000, WsExNoActivate = 0x08000000;
     internal readonly record struct CropRect(int Left, int Top, int Right, int Bottom);
-    internal static (CropRect Top, CropRect BottomLeft) SplitForBadge(CropRect crop, int destinationHeight)
+    internal static (CropRect Top, CropRect BottomLeft) SplitForBadge(CropRect crop, int destinationHeight, int destinationWidth = 155, int badgeHeight = 14, int badgeWidth = 25)
     {
-        if (destinationHeight <= 14 || crop.Right - crop.Left < 2 || crop.Bottom - crop.Top < 2) throw new ArgumentException("Video area too small");
-        var y = Math.Clamp(crop.Top + (int)Math.Round((crop.Bottom - crop.Top) * (destinationHeight - 14d) / destinationHeight), crop.Top + 1, crop.Bottom - 1);
-        var x = Math.Clamp(crop.Left + (int)Math.Round((crop.Right - crop.Left) * 130d / 155d), crop.Left + 1, crop.Right - 1);
+        if (badgeHeight <= 0 || destinationHeight <= badgeHeight || crop.Right - crop.Left < 2 || crop.Bottom - crop.Top < 2) throw new ArgumentException("Video area too small");
+        var y = Math.Clamp(crop.Top + (int)Math.Round((crop.Bottom - crop.Top) * (destinationHeight - (double)badgeHeight) / destinationHeight), crop.Top + 1, crop.Bottom - 1);
+        var x = Math.Clamp(crop.Left + (int)Math.Round((crop.Right - crop.Left) * (destinationWidth - (double)badgeWidth) / destinationWidth), crop.Left + 1, crop.Right - 1);
         return (new CropRect(crop.Left, crop.Top, crop.Right, y), new CropRect(crop.Left, y, x, crop.Bottom));
     }
+    internal static CropRect SubtitleSlice(CropRect crop, int offset, int height, int totalHeight, int displayWidth, int renderedWidth)
+    {
+        var sourceHeight = Math.Max(1, crop.Bottom - crop.Top);
+        var top = Math.Clamp(crop.Top + (int)Math.Round(sourceHeight * (double)offset / totalHeight), crop.Top, crop.Bottom - 1);
+        var bottom = Math.Clamp(crop.Top + (int)Math.Round(sourceHeight * (double)(offset + height) / totalHeight), top + 1, crop.Bottom);
+        var right = Math.Clamp(crop.Left + (int)Math.Round((crop.Right - crop.Left) * (double)renderedWidth / displayWidth), crop.Left + 1, crop.Right);
+        return new CropRect(crop.Left, top, right, bottom);
+    }
+    internal static bool SubtitleCenterAllowed(CropRect visible, CropRect source, double? centerY)
+    {
+        if (centerY is not (>= .5 and <= .98) || visible.Bottom <= visible.Top) return false;
+        var sourceY = source.Top + (source.Bottom - source.Top) * centerY.Value;
+        var position = (sourceY - visible.Top) / (visible.Bottom - visible.Top);
+        return position is >= .78 and <= 1.0;
+    }
+    internal static int SubtitleTop(CropRect visible, CropRect source, double? centerY, int displayHeight, int bandHeight)
+    {
+        if (!SubtitleCenterAllowed(visible, source, centerY)) return displayHeight - bandHeight;
+        var sourceY = source.Top + (source.Bottom - source.Top) * centerY!.Value;
+        var displayY = (sourceY - visible.Top) * displayHeight / (visible.Bottom - visible.Top);
+        return Math.Clamp((int)Math.Round(displayY - bandHeight / 2d), 0, displayHeight - bandHeight);
+    }
+    internal static int SubtitleTopInFrame(CropRect visible, CropRect source, double? centerY, int frameHeight, WindowRect placement, int bandHeight, bool anchorBottom)
+        => anchorBottom ? frameHeight - bandHeight : placement.Top + SubtitleTop(visible, source, centerY, placement.Height, bandHeight);
+    internal static int BottomSubtitleBandHeight(CropRect visible, CropRect source, double? centerY, double? textHeight, int frameHeight, WindowRect placement, int defaultHeight)
+    {
+        int minimum = Math.Min(defaultHeight, placement.Height);
+        if (!SubtitleCenterAllowed(visible, source, centerY) || textHeight is not (> 0 and <= 1)) return minimum;
+        double sourceHeight = source.Bottom - source.Top;
+        double visibleHeight = Math.Max(1, visible.Bottom - visible.Top);
+        double sourceY = source.Top + sourceHeight * centerY!.Value;
+        double center = placement.Top + (sourceY - visible.Top) * placement.Height / visibleHeight;
+        double originalHeight = sourceHeight * textHeight.Value * placement.Height / visibleHeight;
+        int needed = (int)Math.Ceiling(frameHeight - (center - originalHeight / 2 - 3));
+        return Math.Clamp(needed, minimum, Math.Min(24, placement.Height));
+    }
     internal readonly record struct WindowRect(int Left, int Top, int Width, int Height);
+    internal static WindowRect FitInside(CropRect source, int width, int height)
+    {
+        var sourceWidth = Math.Max(1, source.Right - source.Left);
+        var sourceHeight = Math.Max(1, source.Bottom - source.Top);
+        var scale = Math.Min(width / (double)sourceWidth, height / (double)sourceHeight);
+        int fitWidth = Math.Clamp((int)Math.Round(sourceWidth * scale), 1, width);
+        int fitHeight = Math.Clamp((int)Math.Round(sourceHeight * scale), 1, height);
+        return new WindowRect((width - fitWidth) / 2, (height - fitHeight) / 2, fitWidth, fitHeight);
+    }
     internal sealed record WindowInfo(IntPtr Handle, int ProcessId, string Title, string ProcessName)
     {
         public string DisplayName => $"{Title}  —  {ProcessName}";
@@ -74,6 +119,12 @@ internal static class WindowRelay
         return SetWindowPos(hwnd, IntPtr.Zero, virtualRight + 64, virtualTop + 32, width, height, 0x0004 | 0x0010 | 0x0200);
     }
 
+    internal static bool ResizeWithoutMoving(IntPtr hwnd, int width, int height)
+    {
+        if (!IsWindow(hwnd) || IsMinimized(hwnd) || width < 1 || height < 1) return false;
+        return SetWindowPos(hwnd, IntPtr.Zero, 0, 0, width, height, 0x0002 | 0x0004 | 0x0010 | 0x0200);
+    }
+
     internal static bool RestorePosition(IntPtr hwnd, WindowRect rect)
     {
         if (!IsWindow(hwnd)) return false;
@@ -98,6 +149,34 @@ internal static class WindowRelay
         _ = SetWindowLongPtr(hwnd, -20, new IntPtr(style));
         _ = SetWindowPos(hwnd, IntPtr.Zero, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020);
         return GetWindowLongPtr(hwnd, -20).ToInt64() == style;
+    }
+
+    internal static bool SetNoActivate(IntPtr hwnd, out bool wasAlreadySet)
+    {
+        wasAlreadySet = false;
+        if (!IsWindow(hwnd)) return false;
+        var current = GetWindowLongPtr(hwnd, -20).ToInt64();
+        wasAlreadySet = (current & WsExNoActivate) != 0;
+        if (wasAlreadySet) return true;
+        _ = SetWindowLongPtr(hwnd, -20, new IntPtr(current | WsExNoActivate));
+        _ = SetWindowPos(hwnd, IntPtr.Zero, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020);
+        return (GetWindowLongPtr(hwnd, -20).ToInt64() & WsExNoActivate) != 0;
+    }
+
+    internal static bool TryGetNoActivate(IntPtr hwnd, out bool isSet)
+    {
+        isSet = false;
+        if (!IsWindow(hwnd)) return false;
+        isSet = (GetWindowLongPtr(hwnd, -20).ToInt64() & WsExNoActivate) != 0;
+        return true;
+    }
+
+    internal static void RestoreNoActivate(IntPtr hwnd, bool wasAlreadySet)
+    {
+        if (wasAlreadySet || !IsWindow(hwnd)) return;
+        var current = GetWindowLongPtr(hwnd, -20).ToInt64();
+        _ = SetWindowLongPtr(hwnd, -20, new IntPtr(current & ~WsExNoActivate));
+        _ = SetWindowPos(hwnd, IntPtr.Zero, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020);
     }
 
     internal static int Update(IntPtr thumbnail, int left, int top, int width, int height, bool visible, CropRect? sourceCrop = null, byte opacity = 255)
@@ -157,16 +236,29 @@ internal static class WindowRelay
         }
     }
 
+    // Keep large or long burned-in subtitles inside the available band.
+    internal static double AdaptiveSubtitleZoom(CropRect source, int displayWidth, int bandHeight, double requested, double? textWidth, double? textHeight, int badgeWidth = 25)
+    {
+        if (textWidth is not (> 0 and <= 1) || textHeight is not (> 0 and <= 1) || source.Right <= source.Left || source.Bottom <= source.Top) return requested;
+        double widthLimit = Math.Max(1, displayWidth - badgeWidth) / (displayWidth * textWidth.Value * 1.12);
+        double nativeHeight = textHeight.Value * (source.Bottom - source.Top) * displayWidth / (source.Right - source.Left);
+        double heightLimit = (bandHeight - 2d) / Math.Max(1, nativeHeight * 1.2 * 1.12);
+        return Math.Clamp(Math.Min(requested, Math.Min(widthLimit, heightLimit)), 1, requested);
+    }
+
     // Zoom a centred band near the bottom of the detected video; it includes
     // subtitles that are already part of the picture, without OCR.
-    internal static CropRect SubtitleBand(CropRect video, int destinationWidth, int destinationHeight, double zoom)
+    internal static CropRect SubtitleBand(CropRect video, int destinationWidth, int destinationHeight, double zoom, double? centerY = null)
     {
         var videoWidth = Math.Max(1, video.Right - video.Left);
         var videoHeight = Math.Max(1, video.Bottom - video.Top);
         var width = Math.Clamp((int)Math.Round(videoWidth / Math.Max(1, zoom)), 1, videoWidth);
-        var height = Math.Clamp((int)Math.Round(width * destinationHeight / (double)destinationWidth), 1, videoHeight);
+        // Stretch vertically without increasing the width occupied by the text.
+        var height = Math.Clamp((int)Math.Round(width * destinationHeight / (destinationWidth * 1.2)), 1, videoHeight);
         var left = video.Left + (videoWidth - width) / 2;
         var bottom = video.Bottom - Math.Min(videoHeight - height, Math.Max(0, (int)Math.Round(videoHeight * .02)));
+        if (centerY is >= .5 and <= .98)
+            bottom = Math.Clamp(video.Top + (int)Math.Round(videoHeight * centerY.Value) + height / 2, video.Top + height, video.Bottom);
         return new CropRect(left, bottom - height, left + width, bottom);
     }
 
